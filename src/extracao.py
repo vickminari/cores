@@ -5,6 +5,7 @@ import json
 import time
 import re
 import os
+import argparse
 from typing import Dict, Any
 
 # =========================
@@ -23,7 +24,7 @@ client = OpenAI(
     api_key="ollama",
 )  
 
-TAMANHO_AMOSTRA = 100
+TAMANHO_AMOSTRA = 99999 # Todos os relatospyth
 # FILENAME_INPUT = "procedimentos_drci_limpo.csv"
 FILENAME_INPUT = "bo_facil_limpo.csv"
 
@@ -31,10 +32,17 @@ FILENAME_INPUT = "bo_facil_limpo.csv"
 # CAMINHOS
 # =========================
 
-def setup_caminhos():
+def setup_caminhos(filename_input: str, output_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    path_input = os.path.join(base_dir, "..", "data", "processed", FILENAME_INPUT)
-    path_output = os.path.join(base_dir, "..", "results", "ner_extracao")
+    if os.path.isabs(filename_input):
+        path_input = filename_input
+    else:
+        path_input = os.path.join(base_dir, "..", "data", filename_input)
+
+    if os.path.isabs(output_dir):
+        path_output = output_dir
+    else:
+        path_output = os.path.join(base_dir, "..", "results", output_dir)
     return os.path.normpath(path_input), os.path.normpath(path_output)
 
 # =========================
@@ -133,7 +141,7 @@ def _extrair_campo_geo(row: pd.Series, campo: str) -> str | None:
     return str(valor).strip().upper()
 
 
-def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str):
+def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str, nome_entrada: str):
     print(f"\n🚀 Processando modelo: {modelo}")
     resultados = []
 
@@ -141,6 +149,7 @@ def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str):
         relato = row.get("relato_historico", "")
         municipio = _extrair_campo_geo(row, "municipio")
         uf = _extrair_campo_geo(row, "uf")
+        id = row.get("id_procedimento", idx)
 
         print(f"  [{i}/{len(df)}] Extraindo entidades...", end=" ")
 
@@ -168,7 +177,7 @@ def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str):
             qtd = contar_entidades(entidades)
 
             resultados.append({
-                "id_relato": int(idx),
+                "id_relato": int(id),
                 "modelo": modelo,
                 "municipio": municipio,
                 "uf": uf,
@@ -183,7 +192,7 @@ def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str):
         except Exception as e:
             print(f"❌ erro: {e}")
             resultados.append({
-                "id_relato": int(idx),
+                "id_relato": int(id),
                 "modelo": modelo,
                 "municipio": municipio,
                 "uf": uf,
@@ -192,7 +201,7 @@ def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str):
             })
 
     os.makedirs(pasta_saida, exist_ok=True)
-    nome_arquivo = f"NER_{FILENAME_INPUT}_{modelo.replace(':', '_')}_amostra{len(df)}.json"
+    nome_arquivo = f"NER_{nome_entrada}_{modelo.replace(':', '_')}_amostra{len(df)}.json"
     path_saida = os.path.join(pasta_saida, nome_arquivo)
 
     with open(path_saida, "w", encoding="utf-8") as f:
@@ -203,8 +212,40 @@ def processar_modelo(df: pd.DataFrame, modelo: str, pasta_saida: str):
 # MAIN
 # ======
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Extrai entidades com LLM a partir de relatos em CSV."
+    )
+    parser.add_argument(
+        "--amostra",
+        type=int,
+        default=TAMANHO_AMOSTRA,
+        help="Tamanho da amostra de relatos a processar",
+    )
+    parser.add_argument(
+        "--entrada",
+        default=FILENAME_INPUT,
+        help="Nome do arquivo CSV em data/",
+    )
+    parser.add_argument(
+        "--saida",
+        default="ner_extracao",
+        help="Pasta de saída dentro de results (ou caminho absoluto)",
+    )
+    parser.add_argument(
+        "--models",
+        default=",".join(LISTA_MODELOS),
+        help="Lista de modelos separados por vírgula",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    path_in, path_out = setup_caminhos()
+    args = _parse_args()
+    path_in, path_out = setup_caminhos(args.entrada, args.saida)
+    modelos = [m.strip() for m in args.models.split(",") if m.strip()]
+    if not modelos:
+        raise SystemExit("Informe ao menos um modelo em --models.")
 
     try:
         df = pd.read_csv(path_in, encoding="utf-8")
@@ -216,15 +257,16 @@ if __name__ == "__main__":
     ].dropna(subset=["relato_historico"])
 
     df_amostra = df.sample(
-        n=min(TAMANHO_AMOSTRA, len(df)),
+        n=min(args.amostra, len(df)),
         random_state=42
     )
 
     print(f"\n📊 Amostra selecionada: {len(df_amostra)} relatos\n")
 
-    for modelo in LISTA_MODELOS:
+    nome_entrada = os.path.basename(args.entrada)
+    for modelo in modelos:
         try:
             ollama.show(modelo)
-            processar_modelo(df_amostra, modelo, path_out)
+            processar_modelo(df_amostra, modelo, path_out, nome_entrada)
         except Exception:
             print(f"⚠️ Modelo não disponível: {modelo}")
