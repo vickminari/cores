@@ -1,0 +1,21 @@
+# Core Data Science & Grafos
+pandas>=2.0.0
+networkx>=3.0
+matplotlib>=3.7.0
+plotly>=5.20.0
+python-louvain>=0.16  
+scipy>=1.10.0
+scikit-learn>=1.4.0
+
+# Interface 
+streamlit>=1.35.0
+tqdm>=4.66.0
+
+# Inteligência Artificial (Ollama + LangChain)
+ollama>=0.6.1
+langchain-community>=0.0.30
+langchain-ollama>=0.1.0
+openai>=2.30.0
+
+# Exportação de Relatórios
+fpdf2>=2.7.8
