@@ -1,17 +1,27 @@
 import json
 import os
 import re
+import argparse
 from typing import Dict, Any
 
 # =========================
 # CAMINHOS
 # =========================
 
-def setup_caminhos():
+def setup_caminhos(pasta_in: str | None = None, pasta_out: str | None = None):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    pasta_in = os.path.join(base_dir, "..", "results", "ner_extracao")
-    pasta_out = os.path.join(base_dir, "..", "results", "ner_normalizado")
-    return os.path.normpath(pasta_in), os.path.normpath(pasta_out)
+
+    if pasta_in:
+        path_in = pasta_in if os.path.isabs(pasta_in) else os.path.join(base_dir, "..", pasta_in)
+    else:
+        path_in = os.path.join(base_dir, "..", "results", "ner_extracao")
+
+    if pasta_out:
+        path_out = pasta_out if os.path.isabs(pasta_out) else os.path.join(base_dir, "..", pasta_out)
+    else:
+        path_out = os.path.join(base_dir, "..", "results", "ner_normalizado")
+
+    return os.path.normpath(path_in), os.path.normpath(path_out)
 
 
 BANCOS_CONHECIDOS = {
@@ -87,6 +97,16 @@ def normalizar_nome(v: str) -> str:
     v = re.sub(r"\s+", " ", v.strip())
     return v.upper()
 
+def normalizar_agencia(v: str) -> str | None:
+    d = so_digitos(v)
+    return d or None
+
+def normalizar_numero_conta(v: str) -> str | None:
+    v = v.strip().upper()
+    v = re.sub(r"\s+", "", v)
+    v = re.sub(r"\D", "", v)
+    return v or None
+
 def normalizar_banco(v: str) -> str:
     v_original = re.sub(r"\s+", " ", v.strip()).upper()
 
@@ -95,6 +115,8 @@ def normalizar_banco(v: str) -> str:
         "BB": "BANCO DO BRASIL",
         "NUBANK": "NUBANK",
         "NU BANK": "NUBANK",
+        "NU PAGAMENTOS": "NUBANK",
+        "NU PAGAMENTOS S.A.": "NUBANK",
         "MERCADO PAGO": "MERCADO PAGO",
         "PAGSEGURO": "PAGSEGURO",
         "STONE": "STONE",
@@ -172,6 +194,9 @@ def normalizar_entidade(classe: str, valor: str) -> str | None:
     if classe == "bancos":
         return normalizar_banco(valor)
 
+    if classe == "placas_veiculos":
+        return re.sub(r"\s+", "", valor).upper()
+
     if classe in {"pessoas", "empresas"}:
         return normalizar_nome(valor)
 
@@ -191,8 +216,51 @@ def normalizar_registro(registro: Dict[str, Any]) -> Dict[str, Any]:
         for classe, valores in entidades.items()
     }
 
+    pessoas = []
+    pessoas_raw = entidades.get("pessoas", [])
+    if isinstance(pessoas_raw, list):
+        for pessoa in pessoas_raw:
+            if not isinstance(pessoa, dict):
+                continue
+            nome = pessoa.get("nome", "")
+            nome_norm = normalizar_nome(nome) if isinstance(nome, str) else None
+            papeis = pessoa.get("papeis", [])
+            if not isinstance(papeis, list):
+                papeis = []
+            pessoas.append({
+                "nome": nome_norm,
+                "papeis": papeis
+            })
+
+    entidades_norm["pessoas"] = pessoas
+
+    contas_norm = []
+    contas_raw = entidades.get("contas_bancarias", [])
+    if isinstance(contas_raw, list):
+        for conta in contas_raw:
+            if not isinstance(conta, dict):
+                continue
+            agencia = conta.get("agencia", None)
+            numero_conta = conta.get("numero_conta", None)
+            tipo_conta = conta.get("tipo_conta", None)
+            titular = conta.get("titular", None)
+            banco = conta.get("banco", None)
+
+            contas_norm.append({
+                "agencia": normalizar_agencia(str(agencia)) if isinstance(agencia, str) else None,
+                "numero_conta": normalizar_numero_conta(str(numero_conta)) if isinstance(numero_conta, str) else None,
+                "tipo_conta": tipo_conta.strip().upper() if isinstance(tipo_conta, str) and tipo_conta.strip() else None,
+                "titular": normalizar_nome(titular) if isinstance(titular, str) and titular.strip() else None,
+                "banco": normalizar_nome(banco) if isinstance(banco, str) and banco.strip() else None,
+            })
+
+    entidades_norm["contas_bancarias"] = contas_norm
+
     for classe, valores in entidades.items():
         if not isinstance(valores, list):
+            continue
+
+        if classe in {"pessoas", "contas_bancarias"}:
             continue
 
         for v in valores:
@@ -214,7 +282,8 @@ def normalizar_registro(registro: Dict[str, Any]) -> Dict[str, Any]:
     # remover duplicatas por classe
     for classe in entidades_norm:
         if isinstance(entidades_norm[classe], list):
-            entidades_norm[classe] = list(dict.fromkeys(entidades_norm[classe]))
+            if entidades_norm[classe] and all(isinstance(v, str) for v in entidades_norm[classe]):
+                entidades_norm[classe] = list(dict.fromkeys(entidades_norm[classe]))
 
     registro["entidades"] = entidades_norm
     return registro
@@ -223,19 +292,42 @@ def normalizar_registro(registro: Dict[str, Any]) -> Dict[str, Any]:
 # MAIN
 # =========================
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Normaliza arquivos JSON de extração NER."
+    )
+    parser.add_argument(
+        "--entrada",
+        default=None,
+        help="Arquivo ou pasta de entrada (relativa ao projeto ou caminho absoluto).",
+    )
+    parser.add_argument(
+        "--saida",
+        default=None,
+        help="Pasta de saída (relativa ao projeto ou caminho absoluto).",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    pasta_in, pasta_out = setup_caminhos()
+    args = _parse_args()
+    pasta_in, pasta_out = setup_caminhos(args.entrada, args.saida)
     os.makedirs(pasta_out, exist_ok=True)
 
-    arquivos = [
-        a for a in os.listdir(pasta_in)
-        if a.startswith("NER_") and a.endswith(".json") and "_normalizado" not in a
-    ]
+    arquivos = []
+    if os.path.isfile(pasta_in):
+        arquivos = [pasta_in]
+    else:
+        arquivos = [
+            os.path.join(pasta_in, a)
+            for a in os.listdir(pasta_in)
+            if a.startswith("NER_") and a.endswith(".json") and "_normalizado" not in a
+        ]
 
     print(f"📄 Arquivos encontrados: {len(arquivos)}")
 
-    for arq in arquivos:
-        path_in = os.path.join(pasta_in, arq)
+    for path_in in arquivos:
+        arq = os.path.basename(path_in)
         path_out = os.path.join(
             pasta_out, arq.replace(".json", "_normalizado.json")
         )
