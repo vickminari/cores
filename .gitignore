@@ -5,6 +5,10 @@ results
 venv
 .venv
 
+# Pastas auxiliares
+logs
+tools
+
 # Python cache/bytecode
 __pycache__/
 *.py[cod]
